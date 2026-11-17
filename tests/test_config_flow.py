@@ -245,6 +245,13 @@ async def test_malformed_code_is_rejected_locally(hass, mock_client):
     pending.submit_code.assert_awaited_once_with(CODE)
 
 
+def assert_code_field(fields):
+    """The code box asks the phone to offer the texted code (autocomplete=one-time-code)."""
+    text = fields[CONF_CODE]["selector"]["text"]
+    assert text["autocomplete"] == "one-time-code"
+    assert text["type"] == "tel"
+
+
 async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
     """Each form the flow shows must survive the frontend schema serializer."""
     result = await start_flow(hass)
@@ -273,7 +280,7 @@ async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
         result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
     )
     fields = frontend_schema(result)
-    assert fields[CONF_CODE]["type"] == "string"
+    assert_code_field(fields)
     assert fields[CONF_CODE]["required"] is False
     assert fields[CONF_CODE]["optional"] is True
     assert fields[CONF_RESEND]["type"] == "boolean"
@@ -289,7 +296,7 @@ async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
     assert result["step_id"] == "verify"
     fields = frontend_schema(result)
     assert set(fields) == {CONF_CODE}
-    assert fields[CONF_CODE]["type"] == "string"
+    assert_code_field(fields)
     assert fields[CONF_CODE]["required"] is True
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: "12345"})
@@ -317,7 +324,8 @@ async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new-password"})
     assert result["step_id"] == "verify"
     fields = frontend_schema(result)
-    assert fields[CONF_CODE]["type"] == "string" and fields[CONF_CODE]["required"] is True
+    assert_code_field(fields)
+    assert fields[CONF_CODE]["required"] is True
 
 
 async def test_reauth_verification_code_updates_the_entry(hass, setup_integration, mock_client):
