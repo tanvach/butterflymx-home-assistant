@@ -30,17 +30,23 @@ USER_SCHEMA = vol.Schema(
 REAUTH_SCHEMA = vol.Schema({vol.Required(CONF_PASSWORD): str})
 
 
-def _six_digit_code(value: Any) -> str:
-    """A ButterflyMX verification code is the 6 digits from the text."""
-    if isinstance(value, str):
-        value = value.strip()
-    if not isinstance(value, str) or len(value) != 6 or not value.isdigit():
-        raise vol.Invalid("invalid_code")
+def _six_digit_code(value: Any) -> str | None:
+    """Return the 6-digit code from the text, or None if it is not one.
+
+    Validated in the step, not the schema: HA's frontend can only serialize
+    plain types, and a custom validator in data_schema crashes the flow.
+    """
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if len(value) != 6 or not value.isdigit():
+        return None
     return value
 
 
 def _verify_schema(can_resend: bool) -> vol.Schema:
-    fields: dict[Any, Any] = {vol.Required(CONF_CODE): _six_digit_code}
+    code_key = vol.Optional(CONF_CODE) if can_resend else vol.Required(CONF_CODE)
+    fields: dict[Any, Any] = {code_key: str}
     if can_resend:
         fields[vol.Optional(CONF_RESEND, default=False)] = bool
     return vol.Schema(fields)
@@ -221,8 +227,10 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             if user_input.get(CONF_RESEND):
                 outcome = await self._resend()
+            elif (code := _six_digit_code(user_input.get(CONF_CODE))) is None:
+                outcome = "invalid_code"
             else:
-                outcome = await self._submit(user_input[CONF_CODE])
+                outcome = await self._submit(code)
             if outcome is None:
                 return await self._finish()
             if outcome == _SESSION_EXPIRED:
