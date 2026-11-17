@@ -17,6 +17,7 @@ from butterflymx import (
 )
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, TextSelectorType
 
 from .auth import get_pending_verification, pop_pending_verification, remember_challenge
 from .const import CONF_CODE, CONF_EMAIL, CONF_PASSWORD, CONF_RESEND, CONF_TOKENS, DOMAIN
@@ -46,7 +47,9 @@ def _six_digit_code(value: Any) -> str | None:
 
 def _verify_schema(can_resend: bool) -> vol.Schema:
     code_key = vol.Optional(CONF_CODE) if can_resend else vol.Required(CONF_CODE)
-    fields: dict[Any, Any] = {code_key: str}
+    # one-time-code lets iOS/Android offer the texted code above the keyboard.
+    code_field = TextSelector(TextSelectorConfig(type=TextSelectorType.TEL, autocomplete="one-time-code"))
+    fields: dict[Any, Any] = {code_key: code_field}
     if can_resend:
         fields[vol.Optional(CONF_RESEND, default=False)] = bool
     return vol.Schema(fields)
