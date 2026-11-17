@@ -20,7 +20,7 @@ from .auth import VERIFICATION_EXCEPTIONS, VERIFICATION_MESSAGE, get_pending_ver
 from .const import CONF_EMAIL, CONF_PASSWORD, CONF_TOKENS
 from .coordinator import ButterflyMXConfigEntry, ButterflyMXCoordinator
 
-PLATFORMS = [Platform.IMAGE, Platform.LOCK, Platform.SENSOR]
+PLATFORMS = [Platform.EVENT, Platform.IMAGE, Platform.LOCK, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ButterflyMXConfigEntry) -> bool:

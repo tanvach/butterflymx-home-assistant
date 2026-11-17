@@ -42,8 +42,9 @@ Each ButterflyMX unit (tenant) shows up as a device with these entities:
     *   **Last Access**: The door and type of the most recent door release. Attributes include method, device and timestamp.
     *   **Last Message Time / Last Call Time / Last Access Time**: When the latest event actually happened, according to ButterflyMX. Shown as "5 minutes ago" and usable in automations.
 *   **Images**: Snapshots from the latest call, message and door release. Each image's time is when the event happened, not when Home Assistant fetched it.
+*   **Intercom Call** (event, doorbell): Fires a `ring` event once for each new intercom call, with `call_id`, `status`, `type`, `device`, `logged_at` and `image_url`. Use it to trigger a phone notification. Calls that already existed when Home Assistant started don't fire. Two calls between refreshes fire two events.
 
-Data is refreshed every 5 minutes, with a single request per unit.
+Data is refreshed every 30 seconds, with a single request per unit (ButterflyMX allows 350 requests a minute). A new call can take up to about 30 seconds to show up: ButterflyMX doesn't offer resident accounts a live feed of new calls, only push notifications to its own app.
 
 ## Troubleshooting
 
