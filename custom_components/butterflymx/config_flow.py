@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
 
@@ -21,6 +22,8 @@ from homeassistant.helpers.selector import TextSelector, TextSelectorConfig, Tex
 
 from .auth import get_pending_verification, pop_pending_verification, remember_challenge
 from .const import CONF_CODE, CONF_EMAIL, CONF_PASSWORD, CONF_RESEND, CONF_TOKENS, DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 USER_SCHEMA = vol.Schema(
     {
@@ -123,7 +126,8 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
         except ButterflyMXAuthError:
             await self._drop_client()
             return "invalid_auth"
-        except ButterflyMXError:
+        except ButterflyMXError as err:
+            _LOGGER.warning("ButterflyMX login failed: %s: %s", type(err).__name__, err)
             await self._drop_client()
             return "cannot_connect"
         self._pending = None
@@ -257,8 +261,9 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
             return "invalid_code"
         except ButterflyMXConnectionError:
             return "cannot_connect"
-        except ButterflyMXError:
+        except ButterflyMXError as err:
             # Auth and API errors here mean the accounts session was discarded.
+            _LOGGER.warning("ButterflyMX code submit failed: %s: %s", type(err).__name__, err)
             return _SESSION_EXPIRED
         return None
 
@@ -284,7 +289,8 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._pending.can_resend = False
                 return _SHOW_FORM
             return _SESSION_EXPIRED
-        except ButterflyMXError:
+        except ButterflyMXError as err:
+            _LOGGER.warning("ButterflyMX resend failed: %s: %s", type(err).__name__, err)
             return _SESSION_EXPIRED
         if _resend_completed_login(self._client):
             return None
