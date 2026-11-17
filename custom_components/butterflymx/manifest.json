@@ -8,7 +8,7 @@
     "iot_class": "cloud_polling",
     "issue_tracker": "https://github.com/Jxck-S/butterflymx-home-assistant/issues",
     "requirements": [
-        "butterflymx-client @ git+https://github.com/tanvach/butterflymx-client.git@100e3e0904d6528c540b46bdc02dc826ddd6e74a"
+        "butterflymx-client @ git+https://github.com/tanvach/butterflymx-client.git@b46e2be3a8b57243e00d3d7d158f179e15a6b429"
     ],
     "version": "2.2.2"
 }
