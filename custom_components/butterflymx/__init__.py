@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .auth import VERIFICATION_EXCEPTIONS, VERIFICATION_MESSAGE, get_pending_verification, stash_pending_verification
 from .const import CONF_EMAIL, CONF_PASSWORD, CONF_TOKENS
 from .coordinator import ButterflyMXConfigEntry, ButterflyMXCoordinator
 
@@ -23,7 +24,15 @@ PLATFORMS = [Platform.IMAGE, Platform.LOCK, Platform.SENSOR]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ButterflyMXConfigEntry) -> bool:
-    """Set up ButterflyMX from a config entry."""
+    """Set up ButterflyMX from a config entry.
+
+    Saved tokens are passed in and written back when they refresh. The client
+    uses those before it ever submits the password. A password login can text
+    a verification code; retrying setup would text another one, so that failure
+    is an auth failure and the open session is kept for the reauth step.
+    """
+    if get_pending_verification(hass, entry.entry_id) is not None:
+        raise ConfigEntryAuthFailed(VERIFICATION_MESSAGE)
 
     def save_tokens(tokens: dict[str, Any]) -> None:
         hass.config_entries.async_update_entry(entry, data={**entry.data, CONF_TOKENS: tokens})
@@ -38,6 +47,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ButterflyMXConfigEntry) 
 
     try:
         tenants = await client.get_tenants()
+    except VERIFICATION_EXCEPTIONS as err:
+        stash_pending_verification(hass, entry.entry_id, client, err)
+        raise ConfigEntryAuthFailed(VERIFICATION_MESSAGE) from err
     except ButterflyMXAuthError as err:
         raise ConfigEntryAuthFailed(str(err)) from err
     except ButterflyMXError as err:
