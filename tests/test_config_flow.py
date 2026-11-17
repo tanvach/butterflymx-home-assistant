@@ -11,7 +11,9 @@ from butterflymx import (
     ButterflyMXVerificationRequired,
 )
 from homeassistant import config_entries
-from homeassistant.data_entry_flow import FlowResultType, InvalidData
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.data_entry_flow import _BaseFlowManagerView
+from pytest_homeassistant_custom_component.common import start_reauth_flow
 
 from custom_components.butterflymx.const import CONF_CODE, CONF_EMAIL, CONF_PASSWORD, CONF_RESEND, CONF_TOKENS, DOMAIN
 
@@ -36,6 +38,20 @@ def challenge(*, can_resend=False, invalid=False, message=None):
 
 def schema_keys(result):
     return {key.schema for key in result["data_schema"].schema}
+
+
+def frontend_schema(result):
+    """Serialize a form the way the config-flow websocket does before the UI renders it.
+
+    ``_prepare_result_json`` is that path (previously voluptuous_serialize). A custom
+    validator in ``data_schema`` raises ``ValueError: unable to serialize schema`` here,
+    which the frontend shows as "Unknown error occurred".
+    """
+    assert result["type"] is FlowResultType.FORM
+    prepared = _BaseFlowManagerView._prepare_result_json(None, result)
+    fields = prepared["data_schema"]
+    json.dumps(fields)
+    return {field["name"]: field for field in fields}
 
 
 async def test_user_flow_creates_entry_with_tokens(hass, mock_client):
@@ -217,14 +233,91 @@ async def test_resend_that_finishes_login_creates_the_entry(hass, mock_client):
 async def test_malformed_code_is_rejected_locally(hass, mock_client):
     pending = challenge()
     result = await _login_until_code(hass, mock_client, pending)
-    with pytest.raises(InvalidData) as err:
-        await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: "12345"})
-    assert err.value.schema_errors == {CONF_CODE: "invalid_code"}
+    for bad in ("12345", "abcdef", "", "1234567", "  12  "):
+        result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: bad})
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "verify"
+        assert result["errors"] == {"base": "invalid_code"}
     pending.submit_code.assert_not_awaited()
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: f" {CODE} "})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    pending.submit_code.assert_awaited_once_with(CODE)
+
+
+async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
+    """Each form the flow shows must survive the frontend schema serializer."""
+    result = await start_flow(hass)
+    fields = frontend_schema(result)
+    assert set(fields) == {CONF_EMAIL, CONF_PASSWORD}
+    assert fields[CONF_EMAIL]["type"] == "string" and fields[CONF_EMAIL]["required"] is True
+    assert fields[CONF_PASSWORD]["type"] == "string" and fields[CONF_PASSWORD]["required"] is True
+
+    mock_client.login.side_effect = ButterflyMXAuthError("bad")
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: "wrong"}
+    )
+    assert result["errors"] == {"base": "invalid_auth"}
+    frontend_schema(result)
+
+    mock_client.login.side_effect = ButterflyMXConnectionError("down")
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    assert result["errors"] == {"base": "cannot_connect"}
+    frontend_schema(result)
+
+    pending = challenge(can_resend=True)
+    mock_client.login.side_effect = pending
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    fields = frontend_schema(result)
+    assert fields[CONF_CODE]["type"] == "string"
+    assert fields[CONF_CODE]["required"] is False
+    assert fields[CONF_CODE]["optional"] is True
+    assert fields[CONF_RESEND]["type"] == "boolean"
+    assert fields[CONF_RESEND]["optional"] is True
+    hass.config_entries.flow.async_abort(result["flow_id"])
+
+    pending = challenge()
+    mock_client.login.side_effect = pending
+    result = await start_flow(hass)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
+    )
+    assert result["step_id"] == "verify"
+    fields = frontend_schema(result)
+    assert set(fields) == {CONF_CODE}
+    assert fields[CONF_CODE]["type"] == "string"
+    assert fields[CONF_CODE]["required"] is True
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: "12345"})
+    assert result["errors"] == {"base": "invalid_code"}
+    frontend_schema(result)
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    pending.submit_code.assert_awaited_once_with(CODE)
+    await hass.async_block_till_done()
+    entry = result["result"]
+
+    mock_client.login.side_effect = ButterflyMXAuthError("bad")
+    result = await start_reauth_flow(hass, entry)
+    fields = frontend_schema(result)
+    assert result["step_id"] == "reauth_confirm"
+    assert set(fields) == {CONF_PASSWORD}
+    assert fields[CONF_PASSWORD]["type"] == "string"
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "still-wrong"})
+    assert result["errors"] == {"base": "invalid_auth"}
+    frontend_schema(result)
+
+    pending = challenge()
+    mock_client.login.side_effect = pending
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new-password"})
+    assert result["step_id"] == "verify"
+    fields = frontend_schema(result)
+    assert fields[CONF_CODE]["type"] == "string" and fields[CONF_CODE]["required"] is True
 
 
 async def test_reauth_verification_code_updates_the_entry(hass, setup_integration, mock_client):
