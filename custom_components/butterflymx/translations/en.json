@@ -35,5 +35,19 @@
       "already_configured": "This account is already set up.",
       "reauth_successful": "Password updated."
     }
+  },
+  "entity": {
+    "event": {
+      "intercom_call": {
+        "name": "Intercom call",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Ring"
+            }
+          }
+        }
+      }
+    }
   }
 }

@@ -9,4 +9,6 @@ CONF_TOKENS = "tokens"
 CONF_CODE = "code"
 CONF_RESEND = "resend"
 
-SCAN_INTERVAL = timedelta(minutes=5)
+# One small GraphQL request per tenant; ButterflyMX allows 350 a minute.
+# Short enough that a new call shows up while the visitor is still there.
+SCAN_INTERVAL = timedelta(seconds=30)
