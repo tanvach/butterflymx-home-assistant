@@ -1,8 +1,16 @@
 {
     "domain": "butterflymx",
     "name": "ButterflyMX",
-    "codeowners": ["@Jxck-S"],
+    "after_dependencies": [
+        "cloud"
+    ],
+    "codeowners": [
+        "@Jxck-S"
+    ],
     "config_flow": true,
+    "dependencies": [
+        "webhook"
+    ],
     "documentation": "https://github.com/Jxck-S/butterflymx-home-assistant",
     "integration_type": "hub",
     "iot_class": "cloud_polling",
@@ -10,5 +18,5 @@
     "requirements": [
         "butterflymx-client @ git+https://github.com/tanvach/butterflymx-client.git@63f37d0a973bd8f72326142db2b57d4d7b119418"
     ],
-    "version": "2.3.0"
+    "version": "2.4.0"
 }

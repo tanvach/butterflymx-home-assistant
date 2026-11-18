@@ -46,6 +46,16 @@ Each ButterflyMX unit (tenant) shows up as a device with these entities:
 
 Data is refreshed every 30 seconds, with a single request per unit (ButterflyMX allows 350 requests a minute). A new call can take up to about 30 seconds to show up: ButterflyMX doesn't offer resident accounts a live feed of new calls, only push notifications to its own app.
 
+### Instant call alerts (Home Assistant Cloud)
+
+If Home Assistant Cloud (Nabu Casa) is logged in, the integration also sets up a ButterflyMX webhook so the **Intercom Call** event fires within seconds of a buzz:
+
+1. It registers a Home Assistant webhook with a random ID and gets a `hooks.nabu.casa` cloudhook URL for it.
+2. It creates one ButterflyMX tenant integration (`POST /v4/tenants/{tenant}/integrations`, binding `call` / `create`) that posts to that URL. If one already points there, it is reused.
+3. ButterflyMX doesn't sign deliveries, so the integration carries a random secret in an `X-Webhook-Secret` header. Requests without it are rejected with 401.
+
+The 30-second refresh keeps running as a fallback, and each call fires only once whichever way it arrives. Deleting the integration from Home Assistant deletes the ButterflyMX webhook and the cloudhook. Without Home Assistant Cloud nothing changes: calls are found by the 30-second refresh.
+
 ## Troubleshooting
 
 *   **Changed your ButterflyMX password?** Home Assistant shows a repair to re-enter it under **Settings > Devices & Services**.
