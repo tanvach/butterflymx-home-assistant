@@ -132,6 +132,22 @@ async def test_existing_webhook_is_reused_not_duplicated(hass, config_entry, api
     assert config_entry.data[CONF_BMX_INTEGRATIONS] == {"tenant-1": "34"}
 
 
+async def test_existing_webhook_in_live_list_shape_is_reused(hass, config_entry, api_client, cloud, aioclient_mock):
+    """The real list endpoint returns flat items with `config`, not `attributes.configuration`."""
+    aioclient_mock.get(
+        LIST_URL,
+        json={
+            "data": [
+                {"id": "a-1", "config": {"url": "https://elsewhere.example/hook"}, "integrator": "webhook"},
+                {"id": "b-2", "config": {"method": "post", "url": OUR_URL}, "integrator": "webhook"},
+            ]
+        },
+    )
+    await _setup(hass, config_entry)
+    assert not [c for c in aioclient_mock.mock_calls if c[0] == "POST"]
+    assert config_entry.data[CONF_BMX_INTEGRATIONS] == {"tenant-1": "b-2"}
+
+
 async def test_without_cloud_only_polls(hass, config_entry, api_client, aioclient_mock):
     with patch("custom_components.butterflymx.call_webhook.cloud_ready", return_value=False):
         await _setup(hass, config_entry)

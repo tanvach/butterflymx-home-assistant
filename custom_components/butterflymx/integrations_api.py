@@ -53,8 +53,10 @@ def call_webhook_payload(url: str, secret: str) -> dict[str, Any]:
 
 
 def _url_of(item: dict[str, Any]) -> str | None:
+    # The live list returns flat items with `config`; `attributes.configuration` is a fallback
     attributes = item.get("attributes") or item
-    return ((attributes.get("configuration") or {}).get("url")) or None
+    config = attributes.get("config") or attributes.get("configuration") or {}
+    return config.get("url") or None
 
 
 class TenantWebhooks:
