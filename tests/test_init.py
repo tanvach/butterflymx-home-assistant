@@ -69,7 +69,8 @@ async def test_verification_required_at_setup_starts_reauth_once(hass, config_en
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
     assert len(flows) == 1
     assert flows[0]["context"]["source"] == SOURCE_REAUTH
-    assert flows[0]["step_id"] == "verify"
+    # This challenge cannot resend, so reauth opens the code form with no menu.
+    assert flows[0]["step_id"] == "enter_code"
 
     # SETUP_ERROR is not retried on its own. A reload must not construct a new
     # client either, or that client would submit the password and text another code.
@@ -79,7 +80,7 @@ async def test_verification_required_at_setup_starts_reauth_once(hass, config_en
     assert mock_client.get_tenants.await_count == 1
     assert mock_client.creations == 1
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
-    assert [f["step_id"] for f in flows] == ["verify"]
+    assert [f["step_id"] for f in flows] == ["enter_code"]
 
     mock_client.get_tenants.side_effect = None
     mock_client.tokens = {"access_token": "verified", "refresh_token": "vr", "expires_at": 5}
@@ -98,7 +99,7 @@ async def test_verification_during_update_does_not_poll_again(hass, setup_integr
     await hass.async_block_till_done()
 
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
-    assert [f["step_id"] for f in flows] == ["verify"]
+    assert [f["step_id"] for f in flows] == ["enter_code"]
     assert mock_client.tenant.get_overview.await_count == calls_before + 1
     assert setup_integration.runtime_data.update_interval is None
 

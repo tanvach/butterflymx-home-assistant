@@ -97,7 +97,8 @@ async def test_unlock_verification_starts_reauth_without_opening_again(hass, set
     await hass.async_block_till_done()
 
     flows = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
-    assert [flow["step_id"] for flow in flows] == ["verify"]
+    # Resend isn't offered, so the repair opens the code form directly.
+    assert [flow["step_id"] for flow in flows] == ["enter_code"]
     assert door_open.await_count == 1
 
     with pytest.raises(HomeAssistantError, match="verification required"):
