@@ -71,20 +71,22 @@ def _rings(hass) -> list[dict]:
     return fired
 
 
-DELIVERY = {
-    "event": {
-        "resource_type": "call",
-        "action": "create",
-        "data": {
-            "id": 555,
-            "guid": "g-555",
-            "logged_at": "2026-11-18T05:00:00Z",
-            "notification_type": "visitor",
-            "panel_name": "Main Entrance",
-            "image_url": "https://img.example/555",
-        },
+def _delivery(logged_at: str | None = None) -> dict:
+    """A call delivery timestamped now, so it is inside the freshness window."""
+    return {
+        "event": {
+            "resource_type": "call",
+            "action": "create",
+            "data": {
+                "id": 555,
+                "guid": "g-555",
+                "logged_at": logged_at or dt_util.utcnow().isoformat(),
+                "notification_type": "visitor",
+                "panel_name": "Main Entrance",
+                "image_url": "https://img.example/555",
+            },
+        }
     }
-}
 
 
 async def test_setup_creates_call_webhook_once(hass, config_entry, api_client, cloud, aioclient_mock):
@@ -175,10 +177,11 @@ async def test_good_secret_fires_ring_immediately(
 ):
     await _linked(hass, config_entry, aioclient_mock)
     rings = _rings(hass)
+    delivery = _delivery()
     client = await hass_client_no_auth()
     resp = await client.post(
         f"/api/webhook/{config_entry.data[CONF_WEBHOOK_ID]}?tenant=1",
-        json=DELIVERY,
+        json=delivery,
         headers={WEBHOOK_SECRET_HEADER: config_entry.data[CONF_WEBHOOK_SECRET]},
     )
     assert resp.status == 200
@@ -189,7 +192,7 @@ async def test_good_secret_fires_ring_immediately(
     assert ring["status"] == "INITIALIZING"
     assert ring["type"] == "VISITOR"
     assert ring["device"] == "Main Entrance"
-    assert ring["logged_at"] == "2026-11-18T05:00:00Z"
+    assert ring["logged_at"] == delivery["event"]["data"]["logged_at"]
     assert ring["image_url"] == "https://img.example/555"
 
 
@@ -202,7 +205,7 @@ async def test_bad_secret_is_rejected(
     overview_calls = api_client.tenant.get_overview.await_count
     client = await hass_client_no_auth()
     resp = await client.post(
-        f"/api/webhook/{config_entry.data[CONF_WEBHOOK_ID]}?tenant=1", json=DELIVERY, headers=headers
+        f"/api/webhook/{config_entry.data[CONF_WEBHOOK_ID]}?tenant=1", json=_delivery(), headers=headers
     )
     assert resp.status == 401
     await hass.async_block_till_done(wait_background_tasks=True)
@@ -216,10 +219,11 @@ async def test_duplicate_delivery_and_later_poll_fire_once(
     await _linked(hass, config_entry, aioclient_mock)
     rings = _rings(hass)
     client = await hass_client_no_auth()
+    delivery = json.dumps(_delivery())
     for _ in range(2):  # ButterflyMX retries deliveries
         resp = await client.post(
             f"/api/webhook/{config_entry.data[CONF_WEBHOOK_ID]}?tenant=1",
-            data=json.dumps(DELIVERY),
+            data=delivery,
             headers={WEBHOOK_SECRET_HEADER: config_entry.data[CONF_WEBHOOK_SECRET]},
         )
         assert resp.status == 200

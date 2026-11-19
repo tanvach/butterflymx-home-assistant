@@ -20,6 +20,7 @@ from .auth import VERIFICATION_EXCEPTIONS, VERIFICATION_MESSAGE, get_pending_ver
 from .call_webhook import async_remove_call_webhook, async_setup_call_webhook
 from .const import CONF_BMX_INTEGRATIONS, CONF_EMAIL, CONF_PASSWORD, CONF_TOKENS
 from .coordinator import ButterflyMXConfigEntry, ButterflyMXCoordinator
+from .event import async_remove_seen_calls
 
 PLATFORMS = [Platform.EVENT, Platform.IMAGE, Platform.LOCK, Platform.SENSOR]
 
@@ -89,6 +90,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: ButterflyMXConfigEntry)
             tokens=entry.data.get(CONF_TOKENS),
         )
     await async_remove_call_webhook(hass, entry, client)
+    await async_remove_seen_calls(hass, entry.entry_id)
 
 
 def _remove_file(path: str) -> None:

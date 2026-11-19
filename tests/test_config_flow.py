@@ -379,7 +379,7 @@ def test_strings_and_manifest_describe_verification():
 
     manifest = json.loads((ROOT / "custom_components/butterflymx/manifest.json").read_text())
     assert manifest["domain"] == DOMAIN
-    assert manifest["version"] == "2.4.0"
+    assert manifest["version"] == "2.4.1"
     assert manifest["config_flow"] is True
     requirement = manifest["requirements"][0]
     prefix = "butterflymx-client @ git+https://github.com/tanvach/butterflymx-client.git@"
