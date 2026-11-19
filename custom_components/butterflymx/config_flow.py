@@ -48,14 +48,13 @@ def _six_digit_code(value: Any) -> str | None:
     return value
 
 
-def _verify_schema(can_resend: bool) -> vol.Schema:
-    code_key = vol.Optional(CONF_CODE) if can_resend else vol.Required(CONF_CODE)
-    # one-time-code lets iOS/Android offer the texted code above the keyboard.
+def _code_schema() -> vol.Schema:
+    """The code box only. Resend is a menu button, not a checkbox on this form.
+
+    one-time-code lets iOS/Android offer the texted code above the keyboard.
+    """
     code_field = TextSelector(TextSelectorConfig(type=TextSelectorType.TEL, autocomplete="one-time-code"))
-    fields: dict[Any, Any] = {code_key: code_field}
-    if can_resend:
-        fields[vol.Optional(CONF_RESEND, default=False)] = bool
-    return vol.Schema(fields)
+    return vol.Schema({vol.Required(CONF_CODE): code_field})
 
 
 def _code_error(err: ButterflyMXInvalidVerificationCode) -> str:
@@ -93,12 +92,15 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
         self._email: str | None = None
         self._password: str | None = None
         self._base_error: str | None = None
+        # Set after a resend texts a new code, so the menu can use the "resent" copy.
+        self._code_was_resent = False
 
     async def _drop_client(self) -> None:
         """Close a login attempt we are finished with. Does not log secrets."""
         client = self._client
         self._client = None
         self._pending = None
+        self._code_was_resent = False
         if client is not None:
             await client.close()
 
@@ -225,17 +227,61 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    def _account_placeholders(self) -> dict[str, str]:
+        """Fill `{email}` in the verification copy. The address is the account, not the phone."""
+        return {"email": self._email or "ButterflyMX"}
+
+    def _show_verify_menu(self, errors: dict[str, str] | None = None) -> ConfigFlowResult:
+        """Two buttons: enter the code, or text a new one.
+
+        After a code has been re-sent, the same buttons use the `resent` copy
+        so the note that a new code was texted comes from strings, not a checkbox.
+        """
+        result = self.async_show_menu(
+            step_id="resent" if self._code_was_resent else "verify",
+            menu_options=["enter_code", CONF_RESEND],
+            description_placeholders=self._account_placeholders(),
+        )
+        if errors:
+            # async_show_menu has no errors argument; the dialog still shows this.
+            result["errors"] = errors
+        return result
+
+    def _show_code_form(self, errors: dict[str, str] | None = None) -> ConfigFlowResult:
+        """The 6-digit field, with no resend checkbox."""
+        return self.async_show_form(
+            step_id="enter_code",
+            data_schema=_code_schema(),
+            description_placeholders=self._account_placeholders(),
+            errors=errors or {},
+        )
+
     async def async_step_verify(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
-        """Ask for the 6-digit code ButterflyMX just texted."""
+        """Verification entry. A menu when resend is offered, otherwise the code form.
+
+        Menu choices are their own steps. Re-opening this step (the dialog
+        refresh sends no input) only shows the menu again.
+        """
+        if self._pending is None or self._client is None:
+            return await self._restart_after_expired()
+        if self._pending.can_resend:
+            return self._show_verify_menu()
+        return await self.async_step_enter_code()
+
+    async def async_step_resent(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """The verify menu after a new code was texted. Refreshing it does not text again."""
+        self._code_was_resent = True
+        return await self.async_step_verify()
+
+    async def async_step_enter_code(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Ask for the 6-digit code. The accounts session stays on this flow."""
         if self._pending is None or self._client is None:
             return await self._restart_after_expired()
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            if user_input.get(CONF_RESEND):
-                outcome = await self._resend()
-            elif (code := _six_digit_code(user_input.get(CONF_CODE))) is None:
-                outcome = "invalid_code"
+            if (code := _six_digit_code(user_input.get(CONF_CODE))) is None:
+                outcome: str | None = "invalid_code"
             else:
                 outcome = await self._submit(code)
             if outcome is None:
@@ -245,8 +291,28 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
             if outcome != _SHOW_FORM:
                 errors = {"base": outcome}
 
-        can_resend = bool(self._pending and self._pending.can_resend)
-        return self.async_show_form(step_id="verify", data_schema=_verify_schema(can_resend), errors=errors)
+        return self._show_code_form(errors)
+
+    async def async_step_resend(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
+        """Text a new code, then come back to the menu (or the code form) with a note."""
+        if self._pending is None or self._client is None:
+            return await self._restart_after_expired()
+        if not self._pending.can_resend:
+            return await self.async_step_enter_code()
+
+        outcome = await self._resend()
+        if outcome is None:
+            return await self._finish()
+        if outcome == _SESSION_EXPIRED:
+            return await self._restart_after_expired()
+        if outcome == _SHOW_FORM:
+            if self._code_was_resent:
+                return await self.async_step_resent()
+            return await self.async_step_verify()
+        errors = {"base": outcome}
+        if self._pending is not None and self._pending.can_resend:
+            return self._show_verify_menu(errors)
+        return self._show_code_form(errors)
 
     async def _submit(self, code: str) -> str | None:
         """Submit the code. Return an error key, or None when login finished."""
@@ -294,4 +360,5 @@ class ButterflyMXConfigFlow(ConfigFlow, domain=DOMAIN):
             return _SESSION_EXPIRED
         if _resend_completed_login(self._client):
             return None
+        self._code_was_resent = True
         return _SHOW_FORM

@@ -17,11 +17,26 @@
         }
       },
       "verify": {
-        "title": "Enter verification code",
-        "description": "Enter the code ButterflyMX just texted you (expires in 2 minutes).",
-        "data": {
-          "code": "Verification code",
+        "title": "Check your texts",
+        "description": "ButterflyMX texted a 6-digit code to the phone on the {email} account. It expires in about 2 minutes. Use \"Text me a new code\" if it expired or didn't arrive.",
+        "menu_options": {
+          "enter_code": "Enter the code",
           "resend": "Text me a new code"
+        }
+      },
+      "resent": {
+        "title": "New code sent",
+        "description": "A new code was just texted to the phone on the {email} account. It expires in about 2 minutes. Enter it, or use \"Text me a new code\" if it doesn't arrive.",
+        "menu_options": {
+          "enter_code": "Enter the code",
+          "resend": "Text me a new code"
+        }
+      },
+      "enter_code": {
+        "title": "Enter the code",
+        "description": "Enter the 6-digit code ButterflyMX texted to the phone on the {email} account. It expires in about 2 minutes.",
+        "data": {
+          "code": "Verification code"
         }
       }
     },

@@ -40,18 +40,28 @@ def schema_keys(result):
     return {key.schema for key in result["data_schema"].schema}
 
 
-def frontend_schema(result):
-    """Serialize a form the way the config-flow websocket does before the UI renders it.
+def serialized_fields(result):
+    """Serialize a form or menu the way the config-flow websocket does before the UI renders it.
 
     ``_prepare_result_json`` is that path (previously voluptuous_serialize). A custom
     validator in ``data_schema`` raises ``ValueError: unable to serialize schema`` here,
     which the frontend shows as "Unknown error occurred".
     """
-    assert result["type"] is FlowResultType.FORM
     prepared = _BaseFlowManagerView._prepare_result_json(None, result)
     fields = prepared["data_schema"]
     json.dumps(fields)
+    if result["type"] is FlowResultType.MENU:
+        json.dumps(list(prepared["menu_options"]))
     return {field["name"]: field for field in fields}
+
+
+def frontend_schema(result):
+    """Serialize a form step."""
+    assert result["type"] is FlowResultType.FORM
+    return serialized_fields(result)
+
+
+MENU_OPTIONS = ["enter_code", CONF_RESEND]
 
 
 async def test_user_flow_creates_entry_with_tokens(hass, mock_client):
@@ -117,23 +127,37 @@ async def test_reauth_updates_password_and_tokens(hass, setup_integration, mock_
     assert entry.data[CONF_TOKENS]["access_token"] == "new"
 
 
-async def _login_until_code(hass, mock_client, pending):
+async def _login_until_verification(hass, mock_client, pending):
+    """Sign in until ButterflyMX asks for a code. Resend opens the menu; otherwise the code form."""
     mock_client.login.side_effect = pending
     result = await start_flow(hass)
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
     )
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "verify"
     assert mock_client.login.await_count == 1
+    if pending.can_resend:
+        assert result["type"] is FlowResultType.MENU
+        assert result["step_id"] == "verify"
+        assert list(result["menu_options"]) == MENU_OPTIONS
+    else:
+        assert result["type"] is FlowResultType.FORM
+        assert result["step_id"] == "enter_code"
+        assert schema_keys(result) == {CONF_CODE}
     return result
+
+
+async def _choose(hass, result, step_id):
+    assert result["type"] is FlowResultType.MENU
+    return await hass.config_entries.flow.async_configure(result["flow_id"], {"next_step_id": step_id})
 
 
 async def test_user_flow_asks_for_texted_code_then_creates_entry(hass, mock_client):
     pending = challenge()
-    result = await _login_until_code(hass, mock_client, pending)
-    assert schema_keys(result) == {CONF_CODE}
+    result = await _login_until_verification(hass, mock_client, pending)
+    assert result["description_placeholders"] == {"email": EMAIL}
+    assert CONF_RESEND not in schema_keys(result)
 
+    assert mock_client.creations == 1
     mock_client.tokens = {"access_token": "from-code", "refresh_token": "r2", "expires_at": 5}
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: f" {CODE} "})
 
@@ -145,35 +169,65 @@ async def test_user_flow_asks_for_texted_code_then_creates_entry(hass, mock_clie
     assert mock_client.login.await_count == 1
 
 
+async def test_menu_when_resend_is_possible_and_code_form_when_it_is_not(hass, mock_client):
+    pending = challenge(can_resend=True)
+    result = await _login_until_verification(hass, mock_client, pending)
+    assert result["description_placeholders"] == {"email": EMAIL}
+    fields = serialized_fields(result)
+    assert set(fields) == {"next_step_id"}
+    assert CONF_RESEND not in fields
+
+    result = await _choose(hass, result, "enter_code")
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "enter_code"
+    assert schema_keys(result) == {CONF_CODE}
+    assert result["description_placeholders"] == {"email": EMAIL}
+    # The login session is the same object the menu was holding.
+    assert mock_client.login.await_count == 1
+    assert mock_client.creations == 1
+    pending.resend.assert_not_awaited()
+    hass.config_entries.flow.async_abort(result["flow_id"])
+
+    mock_client.login.reset_mock()
+    no_resend = challenge(can_resend=False)
+    result = await _login_until_verification(hass, mock_client, no_resend)
+    assert result["type"] is FlowResultType.FORM
+    assert "menu_options" not in result
+
+
 async def test_invalid_code_can_be_retried(hass, mock_client):
     pending = challenge(can_resend=True)
     rejected = challenge(invalid=True, can_resend=True)
     pending.submit_code.side_effect = rejected
-    result = await _login_until_code(hass, mock_client, pending)
+    result = await _login_until_verification(hass, mock_client, pending)
+    result = await _choose(hass, result, "enter_code")
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: "000000"})
-    assert result["step_id"] == "verify"
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "enter_code"
     assert result["errors"] == {"base": "invalid_code"}
-    assert CONF_RESEND in schema_keys(result)
+    assert schema_keys(result) == {CONF_CODE}
+    assert CONF_RESEND not in schema_keys(result)
 
-    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE, CONF_RESEND: False})
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     rejected.submit_code.assert_awaited_once_with(CODE)
+    assert mock_client.login.await_count == 1
 
 
 async def test_expired_code_message_stays_on_the_form(hass, mock_client):
     pending = challenge()
     pending.submit_code.side_effect = challenge(invalid=True, message="Verification code expired")
-    result = await _login_until_code(hass, mock_client, pending)
+    result = await _login_until_verification(hass, mock_client, pending)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
-    assert result["step_id"] == "verify"
+    assert result["step_id"] == "enter_code"
     assert result["errors"] == {"base": "verification_expired"}
 
 
 async def test_lost_verification_session_returns_to_sign_in(hass, mock_client):
     pending = challenge()
     pending.submit_code.side_effect = ButterflyMXApiError("No verification login is in progress")
-    result = await _login_until_code(hass, mock_client, pending)
+    result = await _login_until_verification(hass, mock_client, pending)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
     assert result["step_id"] == "user"
     assert result["errors"] == {"base": "verification_expired"}
@@ -188,9 +242,9 @@ async def test_lost_verification_session_returns_to_sign_in(hass, mock_client):
 async def test_code_step_keeps_session_when_butterflymx_is_unreachable(hass, mock_client):
     pending = challenge()
     pending.submit_code.side_effect = ButterflyMXConnectionError("down")
-    result = await _login_until_code(hass, mock_client, pending)
+    result = await _login_until_verification(hass, mock_client, pending)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
-    assert result["step_id"] == "verify"
+    assert result["step_id"] == "enter_code"
     assert result["errors"] == {"base": "cannot_connect"}
 
     pending.submit_code.side_effect = None
@@ -200,20 +254,30 @@ async def test_code_step_keeps_session_when_butterflymx_is_unreachable(hass, moc
 
 async def test_resend_requests_another_text_without_submitting_the_code(hass, mock_client):
     pending = challenge(can_resend=True)
-    result = await _login_until_code(hass, mock_client, pending)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_CODE: CODE, CONF_RESEND: True}
-    )
-    assert result["step_id"] == "verify"
-    assert result["errors"] == {}
+    result = await _login_until_verification(hass, mock_client, pending)
+    result = await _choose(hass, result, CONF_RESEND)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "resent"
+    assert not result.get("errors")
+    assert result["description_placeholders"] == {"email": EMAIL}
+    assert list(result["menu_options"]) == MENU_OPTIONS
     pending.resend.assert_awaited_once()
     pending.submit_code.assert_not_awaited()
+    assert mock_client.login.await_count == 1
+    assert mock_client.creations == 1
 
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_CODE: CODE, CONF_RESEND: False}
-    )
+    # Re-opening the menu (no choice) must not text another code.
+    result = await hass.config_entries.flow.async_configure(result["flow_id"])
+    assert result["step_id"] == "resent"
+    pending.resend.assert_awaited_once()
+
+    result = await _choose(hass, result, "enter_code")
+    assert result["step_id"] == "enter_code"
+    assert schema_keys(result) == {CONF_CODE}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
     assert result["type"] is FlowResultType.CREATE_ENTRY
     pending.submit_code.assert_awaited_once_with(CODE)
+    assert mock_client.login.await_count == 1
 
 
 async def test_resend_that_finishes_login_creates_the_entry(hass, mock_client):
@@ -221,22 +285,56 @@ async def test_resend_that_finishes_login_creates_the_entry(hass, mock_client):
     mock_client._pending_login = None
     mock_client.access_token = "finished"
     mock_client.tokens = {"access_token": "finished", "refresh_token": "fr", "expires_at": 9}
-    result = await _login_until_code(hass, mock_client, pending)
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_CODE: CODE, CONF_RESEND: True}
-    )
+    result = await _login_until_verification(hass, mock_client, pending)
+    result = await _choose(hass, result, CONF_RESEND)
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_TOKENS]["access_token"] == "finished"
     pending.submit_code.assert_not_awaited()
+    pending.resend.assert_awaited_once()
+
+
+async def test_resend_that_is_not_offered_drops_the_menu(hass, mock_client):
+    pending = challenge(can_resend=True)
+    pending.resend.side_effect = ButterflyMXApiError("This page does not offer resend")
+    result = await _login_until_verification(hass, mock_client, pending)
+    result = await _choose(hass, result, CONF_RESEND)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "enter_code"
+    assert result["errors"] == {}
+    assert schema_keys(result) == {CONF_CODE}
+    assert pending.can_resend is False
+    pending.submit_code.assert_not_awaited()
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    pending.submit_code.assert_awaited_once_with(CODE)
+
+
+async def test_resend_error_redisplays_the_menu(hass, mock_client):
+    pending = challenge(can_resend=True)
+    pending.resend.side_effect = ButterflyMXConnectionError("down")
+    result = await _login_until_verification(hass, mock_client, pending)
+    result = await _choose(hass, result, CONF_RESEND)
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "verify"
+    assert result["errors"] == {"base": "cannot_connect"}
+    assert list(result["menu_options"]) == MENU_OPTIONS
+    pending.submit_code.assert_not_awaited()
+
+    pending.resend.side_effect = None
+    result = await _choose(hass, result, CONF_RESEND)
+    assert result["step_id"] == "resent"
+    assert not result.get("errors")
+    pending.resend.assert_awaited()
 
 
 async def test_malformed_code_is_rejected_locally(hass, mock_client):
     pending = challenge()
-    result = await _login_until_code(hass, mock_client, pending)
+    result = await _login_until_verification(hass, mock_client, pending)
     for bad in ("12345", "abcdef", "", "1234567", "  12  "):
         result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: bad})
         assert result["type"] is FlowResultType.FORM
-        assert result["step_id"] == "verify"
+        assert result["step_id"] == "enter_code"
         assert result["errors"] == {"base": "invalid_code"}
     pending.submit_code.assert_not_awaited()
 
@@ -279,12 +377,25 @@ async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
     )
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "verify"
+    fields = serialized_fields(result)
+    assert set(fields) == {"next_step_id"}
+    assert list(result["menu_options"]) == MENU_OPTIONS
+    assert CONF_CODE not in fields and CONF_RESEND not in fields
+
+    result = await _choose(hass, result, CONF_RESEND)
+    assert result["step_id"] == "resent"
+    fields = serialized_fields(result)
+    assert set(fields) == {"next_step_id"}
+    assert list(result["menu_options"]) == MENU_OPTIONS
+
+    result = await _choose(hass, result, "enter_code")
     fields = frontend_schema(result)
+    assert result["step_id"] == "enter_code"
     assert_code_field(fields)
-    assert fields[CONF_CODE]["required"] is False
-    assert fields[CONF_CODE]["optional"] is True
-    assert fields[CONF_RESEND]["type"] == "boolean"
-    assert fields[CONF_RESEND]["optional"] is True
+    assert set(fields) == {CONF_CODE}
+    assert fields[CONF_CODE]["required"] is True
     hass.config_entries.flow.async_abort(result["flow_id"])
 
     pending = challenge()
@@ -293,7 +404,8 @@ async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_EMAIL: EMAIL, CONF_PASSWORD: PASSWORD}
     )
-    assert result["step_id"] == "verify"
+    assert result["step_id"] == "enter_code"
+    assert result["type"] is FlowResultType.FORM
     fields = frontend_schema(result)
     assert set(fields) == {CONF_CODE}
     assert_code_field(fields)
@@ -322,7 +434,21 @@ async def test_every_form_schema_serializes_for_the_frontend(hass, mock_client):
     pending = challenge()
     mock_client.login.side_effect = pending
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new-password"})
+    assert result["step_id"] == "enter_code"
+    fields = frontend_schema(result)
+    assert_code_field(fields)
+    assert fields[CONF_CODE]["required"] is True
+
+    hass.config_entries.flow.async_abort(result["flow_id"])
+    pending = challenge(can_resend=True)
+    mock_client.login.side_effect = pending
+    result = await start_reauth_flow(hass, entry)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new-password"})
+    assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "verify"
+    fields = serialized_fields(result)
+    assert set(fields) == {"next_step_id"}
+    result = await _choose(hass, result, "enter_code")
     fields = frontend_schema(result)
     assert_code_field(fields)
     assert fields[CONF_CODE]["required"] is True
@@ -336,7 +462,8 @@ async def test_reauth_verification_code_updates_the_entry(hass, setup_integratio
     assert result["step_id"] == "reauth_confirm"
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new-password"})
-    assert result["step_id"] == "verify"
+    assert result["step_id"] == "enter_code"
+    assert result["type"] is FlowResultType.FORM
     assert schema_keys(result) == {CONF_CODE}
 
     mock_client.tokens = {"access_token": "reauthed", "refresh_token": "rr", "expires_at": 4}
@@ -356,7 +483,7 @@ async def test_reauth_lost_code_session_asks_for_the_password_again(hass, setup_
     mock_client.login.side_effect = pending
     result = await entry.start_reauth_flow(hass)
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new-password"})
-    assert result["step_id"] == "verify"
+    assert result["step_id"] == "enter_code"
 
     result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
     assert result["step_id"] == "reauth_confirm"
@@ -369,17 +496,74 @@ async def test_reauth_lost_code_session_asks_for_the_password_again(hass, setup_
     assert entry.data[CONF_PASSWORD] == "newer-password"
 
 
+async def test_reauth_resend_then_code_updates_the_entry(hass, setup_integration, mock_client):
+    """Reauth reaches the same menu. A new text, then the code, keeps this login session."""
+    entry = setup_integration
+    pending = challenge(can_resend=True)
+    mock_client.login.side_effect = pending
+    result = await entry.start_reauth_flow(hass)
+    assert result["step_id"] == "reauth_confirm"
+
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_PASSWORD: "new-password"})
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "verify"
+    assert list(result["menu_options"]) == MENU_OPTIONS
+    fields = serialized_fields(result)
+    assert set(fields) == {"next_step_id"}
+
+    result = await _choose(hass, result, CONF_RESEND)
+    assert result["step_id"] == "resent"
+    assert result["description_placeholders"] == {"email": EMAIL}
+    assert not result.get("errors")
+    serialized_fields(result)
+    pending.resend.assert_awaited_once()
+    pending.submit_code.assert_not_awaited()
+
+    result = await _choose(hass, result, "enter_code")
+    fields = frontend_schema(result)
+    assert_code_field(fields)
+    mock_client.tokens = {"access_token": "reauthed", "refresh_token": "rr", "expires_at": 4}
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], {CONF_CODE: CODE})
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_PASSWORD] == "new-password"
+    assert entry.data[CONF_TOKENS]["access_token"] == "reauthed"
+    pending.submit_code.assert_awaited_once_with(CODE)
+    assert mock_client.login.await_count == 1
+
+
 def test_strings_and_manifest_describe_verification():
     strings = json.loads((ROOT / "custom_components/butterflymx/strings.json").read_text())
     english = json.loads((ROOT / "custom_components/butterflymx/translations/en.json").read_text())
     assert strings == english
-    description = strings["config"]["step"]["verify"]["description"]
-    assert description == "Enter the code ButterflyMX just texted you (expires in 2 minutes)."
+    steps = strings["config"]["step"]
+    verify = steps["verify"]
+    resent = steps["resent"]
+    enter = steps["enter_code"]
+    buttons = {"enter_code": "Enter the code", "resend": "Text me a new code"}
+    assert verify["title"] == "Check your texts"
+    assert verify["description"] == (
+        "ButterflyMX texted a 6-digit code to the phone on the {email} account. "
+        'It expires in about 2 minutes. Use "Text me a new code" if it expired or didn\'t arrive.'
+    )
+    assert verify["menu_options"] == buttons
+    assert "data" not in verify
+    assert resent["title"] == "New code sent"
+    assert resent["description"] == (
+        "A new code was just texted to the phone on the {email} account. "
+        'It expires in about 2 minutes. Enter it, or use "Text me a new code" if it doesn\'t arrive.'
+    )
+    assert resent["menu_options"] == buttons
+    assert enter["title"] == "Enter the code"
+    assert enter["description"] == (
+        "Enter the 6-digit code ButterflyMX texted to the phone on the {email} account. It expires in about 2 minutes."
+    )
+    assert enter["data"] == {"code": "Verification code"}
     assert set(strings["config"]["error"]) >= {"invalid_auth", "cannot_connect", "invalid_code", "verification_expired"}
 
     manifest = json.loads((ROOT / "custom_components/butterflymx/manifest.json").read_text())
     assert manifest["domain"] == DOMAIN
-    assert manifest["version"] == "2.4.1"
+    assert manifest["version"] == "2.4.2"
     assert manifest["config_flow"] is True
     requirement = manifest["requirements"][0]
     prefix = "butterflymx-client @ git+https://github.com/tanvach/butterflymx-client.git@"

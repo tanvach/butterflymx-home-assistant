@@ -18,5 +18,5 @@
     "requirements": [
         "butterflymx-client @ git+https://github.com/tanvach/butterflymx-client.git@63f37d0a973bd8f72326142db2b57d4d7b119418"
     ],
-    "version": "2.4.1"
+    "version": "2.4.2"
 }
